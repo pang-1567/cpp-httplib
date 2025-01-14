@@ -749,10 +749,11 @@ public:
   virtual void on_idle() {}
 };
 
-class ThreadPool final : public TaskQueue {
+// 线程池
+class ThreadPool : public TaskQueue {
 public:
-  explicit ThreadPool(size_t n, size_t mqr = 0)
-      : shutdown_(false), max_queued_requests_(mqr) {
+  explicit ThreadPool(size_t n) : shutdown_(false) {
+    // 创建n个子线程，每个线程的
     while (n) {
       threads_.emplace_back(worker(*this));
       n--;
@@ -762,17 +763,11 @@ public:
   ThreadPool(const ThreadPool &) = delete;
   ~ThreadPool() override = default;
 
-  bool enqueue(std::function<void()> fn) override {
-    {
-      std::unique_lock<std::mutex> lock(mutex_);
-      if (max_queued_requests_ > 0 && jobs_.size() >= max_queued_requests_) {
-        return false;
-      }
-      jobs_.push_back(std::move(fn));
-    }
-
+  // 主线程enqueue，子线程通过notify_one唤醒
+  void enqueue(std::function<void()> fn) override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    jobs_.push_back(std::move(fn));
     cond_.notify_one();
-    return true;
   }
 
   void shutdown() override {
@@ -791,6 +786,8 @@ public:
   }
 
 private:
+
+  // 单独定义了一个worker，
   struct worker {
     explicit worker(ThreadPool &pool) : pool_(pool) {}
 
@@ -800,25 +797,22 @@ private:
         {
           std::unique_lock<std::mutex> lock(pool_.mutex_);
 
+          // 先解锁mutex后，退出调度，等待被notify唤醒。
           pool_.cond_.wait(
               lock, [&] { return !pool_.jobs_.empty() || pool_.shutdown_; });
 
+          // 退出当前线程条件：关闭线程池&jobs为空
           if (pool_.shutdown_ && pool_.jobs_.empty()) { break; }
 
           fn = pool_.jobs_.front();
           pool_.jobs_.pop_front();
         }
-
+        // 保证fn部位null
         assert(true == static_cast<bool>(fn));
         fn();
       }
-
-#if defined(CPPHTTPLIB_OPENSSL_SUPPORT) && !defined(OPENSSL_IS_BORINGSSL) &&   \
-    !defined(LIBRESSL_VERSION_NUMBER)
-      OPENSSL_thread_stop();
-#endif
     }
-
+    // 引用
     ThreadPool &pool_;
   };
   friend struct worker;
@@ -827,7 +821,6 @@ private:
   std::list<std::function<void()>> jobs_;
 
   bool shutdown_;
-  size_t max_queued_requests_ = 0;
 
   std::condition_variable cond_;
   std::mutex mutex_;
